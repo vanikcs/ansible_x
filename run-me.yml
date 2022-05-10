@@ -1,0 +1,261 @@
+---
+- hosts: all
+  vars_files:
+    - ./users.yml
+
+  tasks:
+    - name: Add repo
+      lineinfile:
+        path: /etc/apt/sources.list
+        line: "deb https://mirror.yandex.ru/debian bullseye main contrib"
+        insertafter: EOF
+
+    - name: Update repos
+      apt: update_cache=yes cache_valid_time=360000
+      ignore_errors: true
+
+    - name: Install Pkgs
+      apt:
+        pkg:
+          - pip
+          - curl
+          - vim
+          - lynx
+          - docker
+          - docker.io
+          - docker-compose
+          - chrony
+          - sudo
+    - name: Set master ntp
+      lineinfile:
+        path: /etc/chrony/chrony.conf
+        regexp: '^pool' 
+        line: pool 4.4.4.1 iburst
+
+    - name: Restart chrony
+      service:
+        name: chrony
+        state: restarted
+
+    - name: Create users
+      user:
+        name: '{{ username_admin }}'
+        password: '{{ pass_admin | password_hash("sha512") }}'
+        state: present
+        shell: /bin/bash
+        groups:
+          - sudo
+        createhome: yes
+
+- hosts: 192.168.100.254
+  vars_files:
+    - ./vars.yml
+  tasks:
+    - name: Check hostname
+      command: hostname
+      register: hostname_rtr_l
+    - name: Set hostname
+      hostname:
+        name: "{{ left_router }}"
+      when: hostname_rtr_l.stdout != "{{ left_router }}"
+    - name: Reboot after changes
+      reboot:
+      when: hostname_rtr_l.stdout!= "{{ left_router }}"
+    - name: Copy GRE conf
+      copy:
+        src: ./gre_RTRL
+        dest: /etc/gre_RTRL
+        mode: "0755"
+
+    - name: Launch conf for GRE
+      command: /bin/bash /etc/gre_RTRL
+      ignore_errors: true
+
+    - name: Change conf cron
+      lineinfile:
+        path: /etc/crontab
+        line: "@reboot root /etc/gre_RTRL"
+        insertafter: EOF
+
+    - name: Install Pkgs
+      apt:
+        pkg:
+          - strongswan
+          - nginx
+
+    - name: Copy ipsec.conf
+      copy:
+        src: ./ipsec_RTRL
+        dest: /etc/ipsec.conf
+        mode: "0644"
+
+    - name: Copy ipsec.secrets
+      copy:
+        src: ./ipsec.secrets
+        dest: /etc/ipsec.secrets
+        mode: "0600"
+
+    - name: Restart Strongswan
+      service:
+        name: strongswan-starter
+        enabled: yes
+        state: restarted
+    - name: Configure nginx proxy
+      copy:
+        src: ./proxy.conf
+        dest: /etc/nginx/sites-enabled/proxy.conf
+        mode: "0655"
+    - name: Restart nginx
+      service:
+        name: nginx
+        state: restarted
+
+- hosts: 3.3.3.100
+  vars_files:
+    - ./vars.yml
+  tasks:
+    - name: Check hostname
+      command: hostname
+      register: hostname_rtr_r
+    - name: Set hostname
+      hostname:
+        name: "{{ right_router }}"
+      when: hostname_rtr_r.stdout != "{{ right_router }}"
+    - name: Reboot after changes
+      reboot:
+      when: hostname_rtr_r.stdout!= "{{ right_router }}"
+    - name: Copy GRE conf
+      copy:
+        src: ./gre_RTRR
+        dest: /etc/gre_RTRR
+        mode: "0755"
+
+    - name: Launch conf for GRE
+      command: /bin/bash /etc/gre_RTRR
+      ignore_errors: true
+
+    - name: Change conf cron
+      lineinfile:
+        path: /etc/crontab
+        line: "@reboot root /etc/gre_RTRR"
+        insertafter: EOF
+
+    - name: Install Pkgs
+      apt:
+        pkg:
+          - strongswan
+
+    - name: Copy ipsec.conf
+      copy:
+        src: ./ipsec_RTRR
+        dest: /etc/ipsec.conf
+        mode: "0644"
+
+    - name: Copy ipsec.secrets
+      copy:
+        src: ./ipsec.secrets
+        dest: /etc/ipsec.secrets
+        mode: "0600"
+
+    - name: Restart Strongswan
+      service:
+        name: strongswan-starter
+        enabled: yes
+        state: restarted
+
+- hosts: 192.168.100.100
+  vars_files:
+    - ./vars.yml
+  tasks:
+    - name: Check hostname
+      command: hostname
+      register: hostname_web_l
+    - name: Set hostname
+      hostname:
+        name: "{{ left_web }}"
+      when: hostname_web_l.stdout != "{{ left_web }}"
+    - name: Reboot after changes
+      reboot:
+      when: hostname_web_l.stdout!= "{{ left_web }}"
+    - name: Install Pkgs
+      apt:
+        pkg:
+          - nginx
+          - keepalived
+    - name: Copy ntp_check
+      copy:
+        src: ./ntp_check
+        dest: /root/ntp_check
+        mode: "0755"
+    - name: Copy keepalived config
+      copy:
+        src: keep_WEBL
+        dest: /etc/keepalived/keepalived.conf
+        mode: "0644"
+    - name: Restart keepalived
+      service:
+        name: keepalived
+        state: restarted
+
+- hosts: 172.16.100.100
+  vars_files:
+    - ./vars.yml
+  tasks:
+    - name: Check hostname
+      command: hostname
+      register: hostname_web_r
+    - name: Set hostname
+      hostname:
+        name: "{{ right_web }}"
+      when: hostname_web_r.stdout != "{{ right_web }}"
+    - name: Reboot after changes
+      reboot:
+      when: hostname_web_r.stdout!= "{{ right_web }}"
+    - name: Install Pkgs
+      apt:
+        pkg:
+          - nginx
+
+- hosts: 4.4.4.1
+  vars_files:
+    - ./vars.yml
+  tasks:
+    - name: Check hostname
+      command: hostname
+      register: hostname_isp
+    - name: Set hostname
+      hostname:
+        name: "{{ isp }}"
+      when: hostname_isp.stdout != "{{ isp }}"
+    - name: Reboot after changes
+      reboot:
+      when: hostname_isp.stdout != "{{ isp }}"
+    - name: Copy config NTP server
+      copy:
+        src: /opt/ansible_work/ntp_server.conf
+        dest: /etc/chrony/chrony.conf
+    - name: Restart service
+      service:
+        name: chronyd
+        state: restarted
+
+- hosts: server
+  tasks:
+    - name: Install Pkgs
+      apt:
+        pkg:
+          - keepalived
+    - name: Copy ntp_check
+      copy:
+        src: ./ntp_check
+        dest: /root/ntp_check
+        mode: "0755"
+    - name: Copy keepalived config
+      copy:
+        src: keep_WEBL
+        dest: /etc/keepalived/keepalived.conf
+        mode: "0644"
+    - name: Restart keepalived
+      service:
+        name: keepalived
+        state: restarted
